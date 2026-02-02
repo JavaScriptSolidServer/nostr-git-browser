@@ -215,6 +215,49 @@
       font-size: 13px;
       z-index: 200;
     }
+    .header-actions {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+    }
+    .settings-btn {
+      background: none;
+      border: none;
+      color: #fff;
+      cursor: pointer;
+      font-size: 18px;
+      padding: 4px 8px;
+      opacity: 0.8;
+    }
+    .settings-btn:hover { opacity: 1; }
+    .test-btn {
+      background: #238636;
+      border: none;
+      color: #fff;
+      padding: 6px 12px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 12px;
+    }
+    .test-btn:hover { background: #2ea043; }
+    .test-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+    .pubkey-display {
+      font-family: monospace;
+      font-size: 11px;
+      background: #f6f8fa;
+      padding: 8px;
+      border-radius: 4px;
+      word-break: break-all;
+      margin-top: 4px;
+    }
+    .test-result {
+      margin-top: 12px;
+      padding: 8px;
+      border-radius: 4px;
+      font-size: 12px;
+    }
+    .test-result.success { background: #dafbe1; color: #1a7f37; }
+    .test-result.error { background: #ffebe9; color: #cf222e; }
   </style>
 </head>
 <body>
@@ -228,8 +271,83 @@
     import git from 'https://esm.sh/isomorphic-git@1.25.3';
     import http from 'https://esm.sh/isomorphic-git@1.25.3/http/web';
     import LightningFS from 'https://esm.sh/@isomorphic-git/lightning-fs@4.6.0';
+    import { schnorr } from 'https://esm.sh/@noble/curves@1.3.0/secp256k1';
+    import { bytesToHex, hexToBytes } from 'https://esm.sh/@noble/hashes@1.3.3/utils';
+    import { sha256 } from 'https://esm.sh/@noble/hashes@1.3.3/sha256';
 
     const html = htm.bind(h);
+
+    // === NIP-98 Auth ===
+    function getPrivkey() {
+      return localStorage.getItem('nostr-git-privkey') || '';
+    }
+
+    function setPrivkey(key) {
+      localStorage.setItem('nostr-git-privkey', key);
+    }
+
+    function getPubkeyFromPrivkey(privkey) {
+      try {
+        const pubkeyBytes = schnorr.getPublicKey(privkey);
+        return bytesToHex(pubkeyBytes);
+      } catch {
+        return '';
+      }
+    }
+
+    function serializeEvent(event) {
+      return JSON.stringify([
+        0,
+        event.pubkey,
+        event.created_at,
+        event.kind,
+        event.tags,
+        event.content
+      ]);
+    }
+
+    function getEventHash(event) {
+      const serialized = serializeEvent(event);
+      const encoder = new TextEncoder();
+      return bytesToHex(sha256(encoder.encode(serialized)));
+    }
+
+    async function signEvent(event, privkey) {
+      const pubkey = getPubkeyFromPrivkey(privkey);
+      const eventWithPubkey = { ...event, pubkey };
+      const id = getEventHash(eventWithPubkey);
+      const sig = bytesToHex(schnorr.sign(id, privkey));
+      return { ...eventWithPubkey, id, sig };
+    }
+
+    async function createNip98Token(url, method, privkey) {
+      const event = {
+        kind: 27235,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [
+          ['u', url],
+          ['method', method]
+        ],
+        content: ''
+      };
+      const signed = await signEvent(event, privkey);
+      return 'Nostr ' + btoa(JSON.stringify(signed));
+    }
+
+    async function nip98Fetch(url, method, privkey, body = null) {
+      const auth = await createNip98Token(url, method, privkey);
+      const options = {
+        method,
+        headers: {
+          'Authorization': auth
+        }
+      };
+      if (body !== null) {
+        options.body = body;
+        options.headers['Content-Type'] = 'text/plain';
+      }
+      return fetch(url, options);
+    }
 
     // === Storage ===
     const fs = new LightningFS('nostr-git-browser');
@@ -394,17 +512,20 @@
     }
 
     // === Components ===
-    function Header({ relayStatus }) {
+    function Header({ relayStatus, onSettings }) {
       return html`
         <header>
           <h1>🔗 Nostr Git Browser</h1>
-          <div class="status">
-            ${relayStatus.map(r => html`
-              <span key=${r.url}>
-                <span class="status-dot ${r.status}"></span>
-                ${new URL(r.url).host}
-              </span>
-            `)}
+          <div class="header-actions">
+            <div class="status">
+              ${relayStatus.map(r => html`
+                <span key=${r.url}>
+                  <span class="status-dot ${r.status}"></span>
+                  ${new URL(r.url).host}
+                </span>
+              `)}
+            </div>
+            <button class="settings-btn" onClick=${onSettings} title="Settings">⚙️</button>
           </div>
         </header>
       `;
@@ -567,6 +688,112 @@
       return html`<div class="toast">${message}</div>`;
     }
 
+    function SettingsModal({ onClose, onToast }) {
+      const [privkey, setPrivkeyState] = useState(getPrivkey);
+      const [testUrl, setTestUrl] = useState('https://melvin.me/public/git/sync/20260202/counter.txt');
+      const [testResult, setTestResult] = useState(null);
+      const [testing, setTesting] = useState(false);
+
+      const pubkey = useMemo(() => getPubkeyFromPrivkey(privkey), [privkey]);
+      const isValid = pubkey.length === 64;
+
+      const handleSave = () => {
+        setPrivkey(privkey);
+        onToast('Settings saved');
+        onClose();
+      };
+
+      const handleTest = async () => {
+        if (!isValid) {
+          setTestResult({ success: false, message: 'Invalid private key' });
+          return;
+        }
+
+        setTesting(true);
+        setTestResult(null);
+
+        try {
+          // First GET the current value
+          let currentValue = 0;
+          try {
+            const getRes = await fetch(testUrl + '?' + Date.now());
+            if (getRes.ok) {
+              const text = await getRes.text();
+              currentValue = parseInt(text.trim()) || 0;
+            }
+          } catch (e) {
+            // File doesn't exist yet, start at 0
+          }
+
+          // PUT the incremented value
+          const newValue = currentValue + 1;
+          const res = await nip98Fetch(testUrl, 'PUT', privkey, String(newValue));
+
+          if (res.ok) {
+            setTestResult({ success: true, message: `Success! Counter: ${currentValue} → ${newValue}` });
+          } else {
+            const text = await res.text();
+            setTestResult({ success: false, message: `HTTP ${res.status}: ${text}` });
+          }
+        } catch (err) {
+          setTestResult({ success: false, message: err.message });
+        } finally {
+          setTesting(false);
+        }
+      };
+
+      return html`
+        <div class="modal-overlay" onClick=${onClose}>
+          <div class="modal" onClick=${e => e.stopPropagation()}>
+            <h2>Settings</h2>
+            <label>
+              <span>Private Key (hex)</span>
+              <input
+                type="password"
+                value=${privkey}
+                onInput=${e => setPrivkeyState(e.target.value)}
+                placeholder="64 character hex private key"
+              />
+            </label>
+            ${privkey && html`
+              <div>
+                <span style="font-size: 12px; color: #656d76;">Public Key:</span>
+                <div class="pubkey-display ${isValid ? '' : 'error'}">
+                  ${isValid ? pubkey : 'Invalid private key'}
+                </div>
+              </div>
+            `}
+            <hr style="margin: 16px 0; border: none; border-top: 1px solid #d0d7de;" />
+            <label>
+              <span>Test URL (PUT)</span>
+              <input
+                value=${testUrl}
+                onInput=${e => setTestUrl(e.target.value)}
+                placeholder="https://melvin.me/path/to/file.txt"
+              />
+            </label>
+            <button
+              class="test-btn"
+              onClick=${handleTest}
+              disabled=${!isValid || testing}
+              style="margin-top: 8px;"
+            >
+              ${testing ? 'Testing...' : 'Test NIP-98 PUT'}
+            </button>
+            ${testResult && html`
+              <div class="test-result ${testResult.success ? 'success' : 'error'}">
+                ${testResult.message}
+              </div>
+            `}
+            <div class="buttons">
+              <button type="button" onClick=${onClose}>Cancel</button>
+              <button type="submit" onClick=${handleSave}>Save</button>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+
     // === Main App ===
     function App() {
       const [config, setConfig] = useState(loadConfig);
@@ -578,6 +805,7 @@
       const [fileContent, setFileContent] = useState('');
       const [localFiles, setLocalFiles] = useState({});
       const [showAddModal, setShowAddModal] = useState(false);
+      const [showSettingsModal, setShowSettingsModal] = useState(false);
       const [relayStatus, setRelayStatus] = useState([]);
       const [toast, setToast] = useState('');
 
@@ -759,7 +987,7 @@
 
       return html`
         <div class="app">
-          <${Header} relayStatus=${relayStatus} />
+          <${Header} relayStatus=${relayStatus} onSettings=${() => setShowSettingsModal(true)} />
           <div class="main">
             <${RepoList}
               repos=${config.repos}
@@ -789,6 +1017,12 @@
             <${AddRepoModal}
               onAdd=${handleAddRepo}
               onClose=${() => setShowAddModal(false)}
+            />
+          `}
+          ${showSettingsModal && html`
+            <${SettingsModal}
+              onClose=${() => setShowSettingsModal(false)}
+              onToast=${showToast}
             />
           `}
           <${Toast} message=${toast} />
