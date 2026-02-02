@@ -4,7 +4,7 @@ A browser-based git repository viewer and sync client using Nostr for real-time 
 
 ## Status: ✅ Implemented
 
-Working prototype in `index.html` (~750 lines, single file, no build step).
+Working prototype in `index.html` (~1000 lines, single file, no build step).
 
 **Features working:**
 - Clone repositories to IndexedDB
@@ -15,6 +15,9 @@ Working prototype in `index.html` (~750 lines, single file, no build step).
 - Multi-relay WebSocket connections with status indicators
 - Add/remove repositories via modal
 - Configuration persisted to localStorage
+- **Git push with NIP-98 authentication** (Schnorr signatures)
+- Settings modal for private key configuration
+- Create commits and push to remote servers
 
 ## Overview
 
@@ -24,15 +27,17 @@ This project brings the functionality of [nostr-git-sync](https://github.com/Jav
 2. Clone/sync repositories to browser IndexedDB
 3. Browse repository files with a visual UI
 4. Auto-update when new commits are published
+5. **Push commits with NIP-98 Schnorr authentication**
 
 ```
 ┌─────────────────┐     WebSocket      ┌─────────────────┐
 │                 │◄──────────────────►│  Nostr Relays   │
-│     Browser     │                    └─────────────────┘
-│                 │     HTTP/fetch     ┌─────────────────┐
-│  IndexedDB      │◄──────────────────►│  Git Server     │
-│  /sync/repo1/   │     (clone/pull)   │  (JSS, GitHub)  │
-│  /sync/repo2/   │                    └─────────────────┘
+│     Browser     │                    │  (30617 events) │
+│                 │                    └─────────────────┘
+│  IndexedDB      │     HTTP/fetch     ┌─────────────────┐
+│  /sync/repo1/   │◄──────────────────►│  Git Server     │
+│  /sync/repo2/   │  clone/pull/push   │  (JSS w/NIP-98) │
+│                 │   (NIP-98 auth)    └─────────────────┘
 └─────────────────┘
 ```
 
@@ -160,9 +165,52 @@ await git.pull({
   singleBranch: true,
   author: { name: 'browser', email: 'browser@local' }
 });
+
+// Push with NIP-98 auth
+await git.push({
+  fs,
+  http: createAuthenticatedHttp(privkey),  // Custom HTTP client
+  dir,
+  url: cloneUrl,
+  ref: branch
+});
 ```
 
-### 2. Nostr Relay Connections
+### 2. NIP-98 Push Authentication
+
+Git push uses NIP-98 (HTTP Auth) with Schnorr signatures. Each HTTP request gets a unique signed token:
+
+```javascript
+function createAuthenticatedHttp(privkey) {
+  return {
+    async request({ url, method, headers, body }) {
+      // Create NIP-98 event (kind 27235)
+      const event = {
+        kind: 27235,
+        created_at: Math.floor(Date.now() / 1000),
+        tags: [['u', url], ['method', method]],
+        content: ''
+      };
+      const signed = await signEvent(event, privkey);
+      const token = btoa(JSON.stringify(signed));
+
+      return fetch(url, {
+        method,
+        headers: { ...headers, 'Authorization': 'Nostr ' + token },
+        body
+      });
+    }
+  };
+}
+```
+
+**Key points:**
+- Uses `@noble/curves` for Schnorr signatures (same as Bitcoin/Nostr)
+- Each request (GET /info/refs, POST /git-receive-pack) gets its own token
+- Server validates signature and checks ACL for `did:nostr:<pubkey>`
+- Private key stored in localStorage (settings modal)
+
+### 3. Nostr Relay Connections
 
 ```javascript
 function connectRelays(relays, repoIds, trusted, onEvent) {
@@ -333,23 +381,35 @@ No build step, no npm install, no configuration files needed.
 4. Repository clones to IndexedDB
 5. Browse files, view index.html with live WebLedger data
 
+## Example: Push Changes
+
+1. Open Settings (⚙️ button)
+2. Enter your **private key** (64-char hex)
+3. Select a repository from dropdown
+4. Click **"Create Commit & Push"**
+5. Creates `browser-test.txt`, commits, and pushes to remote
+
+The push button (↑) in repo list also works for pushing existing commits.
+
 ## Future Improvements
 
 - [ ] Delete repository button
-- [ ] Settings panel for relay configuration
+- [ ] File editing UI
+- [ ] NIP-07 browser extension support (avoid raw privkey)
 - [ ] Syntax highlighting for code files
 - [ ] Commit history viewer
 - [ ] Diff viewer
-- [ ] Export/import configuration
 - [ ] Service worker for offline support
-- [ ] Storage usage indicator
+- [ ] Publish 30617 events after push
 
 ## References
 
 - [isomorphic-git](https://isomorphic-git.org/) - Git implementation in JavaScript
 - [LightningFS](https://github.com/isomorphic-git/lightning-fs) - IndexedDB filesystem
 - [NIP-34](https://github.com/nostr-protocol/nips/blob/master/34.md) - Git over Nostr
+- [NIP-98](https://github.com/nostr-protocol/nips/blob/master/98.md) - HTTP Auth with Nostr
 - [nostr-git-sync](https://github.com/JavaScriptSolidServer/nostr-git-sync) - Server-side equivalent
+- [@noble/curves](https://github.com/paulmillr/noble-curves) - Schnorr signatures
 - [Preact](https://preactjs.com/) - Fast 3kB React alternative
 - [htm](https://github.com/developit/htm) - JSX-like syntax with template literals
 
