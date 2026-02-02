@@ -1,0 +1,803 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Nostr Git Browser</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f6f8fa;
+      color: #1f2328;
+      height: 100vh;
+      overflow: hidden;
+    }
+    .app {
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+    }
+    header {
+      background: #24292f;
+      color: #fff;
+      padding: 12px 20px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    header h1 { font-size: 18px; font-weight: 600; }
+    .status { display: flex; gap: 12px; font-size: 13px; }
+    .status-dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      margin-right: 4px;
+    }
+    .status-dot.connected { background: #3fb950; }
+    .status-dot.disconnected { background: #f85149; }
+    .status-dot.connecting { background: #d29922; }
+    .main {
+      display: flex;
+      flex: 1;
+      overflow: hidden;
+    }
+    .sidebar {
+      width: 240px;
+      background: #fff;
+      border-right: 1px solid #d0d7de;
+      display: flex;
+      flex-direction: column;
+    }
+    .sidebar h2 {
+      font-size: 12px;
+      text-transform: uppercase;
+      color: #656d76;
+      padding: 12px 16px;
+      border-bottom: 1px solid #d0d7de;
+    }
+    .repo-list {
+      flex: 1;
+      overflow-y: auto;
+      padding: 8px;
+    }
+    .repo-item {
+      display: flex;
+      align-items: center;
+      padding: 8px 12px;
+      border-radius: 6px;
+      cursor: pointer;
+      gap: 8px;
+    }
+    .repo-item:hover { background: #f6f8fa; }
+    .repo-item.selected { background: #ddf4ff; }
+    .repo-item .name { flex: 1; font-size: 14px; }
+    .repo-item .sync-btn {
+      opacity: 0;
+      background: none;
+      border: none;
+      cursor: pointer;
+      font-size: 14px;
+    }
+    .repo-item:hover .sync-btn { opacity: 1; }
+    .repo-item.syncing .sync-btn { opacity: 1; animation: spin 1s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .add-btn {
+      margin: 8px;
+      padding: 8px;
+      background: #f6f8fa;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .add-btn:hover { background: #eaeef2; }
+    .file-tree {
+      width: 280px;
+      background: #fff;
+      border-right: 1px solid #d0d7de;
+      overflow-y: auto;
+      padding: 8px;
+    }
+    .file-entry {
+      display: flex;
+      align-items: center;
+      padding: 4px 8px;
+      border-radius: 4px;
+      cursor: pointer;
+      font-size: 13px;
+      gap: 6px;
+    }
+    .file-entry:hover { background: #f6f8fa; }
+    .file-entry.selected { background: #ddf4ff; }
+    .file-view {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .file-toolbar {
+      padding: 8px 16px;
+      background: #f6f8fa;
+      border-bottom: 1px solid #d0d7de;
+      font-size: 13px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .file-toolbar .path { font-family: monospace; color: #656d76; }
+    .file-content {
+      flex: 1;
+      overflow: auto;
+      padding: 16px;
+      background: #fff;
+    }
+    .file-content pre {
+      font-family: monospace;
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+      word-break: break-all;
+    }
+    .file-content iframe {
+      width: 100%;
+      height: 100%;
+      border: none;
+    }
+    .empty-state {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      height: 100%;
+      color: #656d76;
+      font-size: 14px;
+    }
+    .modal-overlay {
+      position: fixed;
+      inset: 0;
+      background: rgba(0,0,0,0.5);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      z-index: 100;
+    }
+    .modal {
+      background: #fff;
+      border-radius: 8px;
+      padding: 20px;
+      width: 400px;
+      max-width: 90%;
+    }
+    .modal h2 { margin-bottom: 16px; font-size: 18px; }
+    .modal label {
+      display: block;
+      margin-bottom: 12px;
+      font-size: 13px;
+    }
+    .modal label span { display: block; margin-bottom: 4px; color: #656d76; }
+    .modal input, .modal textarea {
+      width: 100%;
+      padding: 8px;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      font-size: 14px;
+    }
+    .modal textarea { resize: vertical; }
+    .modal .buttons {
+      display: flex;
+      justify-content: flex-end;
+      gap: 8px;
+      margin-top: 16px;
+    }
+    .modal button {
+      padding: 8px 16px;
+      border-radius: 6px;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    .modal button[type="button"] {
+      background: #f6f8fa;
+      border: 1px solid #d0d7de;
+    }
+    .modal button[type="submit"] {
+      background: #2da44e;
+      border: none;
+      color: #fff;
+    }
+    .toast {
+      position: fixed;
+      bottom: 20px;
+      right: 20px;
+      background: #24292f;
+      color: #fff;
+      padding: 12px 20px;
+      border-radius: 6px;
+      font-size: 13px;
+      z-index: 200;
+    }
+  </style>
+</head>
+<body>
+  <div id="app"></div>
+
+  <script type="module">
+    // === Dependencies ===
+    import { h, render } from 'https://esm.sh/preact@10.19.3';
+    import { useState, useEffect, useCallback, useMemo } from 'https://esm.sh/preact@10.19.3/hooks';
+    import htm from 'https://esm.sh/htm@3.1.1';
+    import git from 'https://esm.sh/isomorphic-git@1.25.3';
+    import http from 'https://esm.sh/isomorphic-git@1.25.3/http/web';
+    import LightningFS from 'https://esm.sh/@isomorphic-git/lightning-fs@4.6.0';
+
+    const html = htm.bind(h);
+
+    // === Storage ===
+    const fs = new LightningFS('nostr-git-browser');
+    const pfs = fs.promises;
+    const SYNC_DIR = '/sync';
+
+    // === Config ===
+    const DEFAULT_CONFIG = {
+      relays: ['wss://nos.lol', 'wss://relay.damus.io', 'wss://melvin.me/relay'],
+      repos: {}
+    };
+
+    function loadConfig() {
+      try {
+        return JSON.parse(localStorage.getItem('nostr-git-config')) || DEFAULT_CONFIG;
+      } catch {
+        return DEFAULT_CONFIG;
+      }
+    }
+
+    function saveConfig(config) {
+      localStorage.setItem('nostr-git-config', JSON.stringify(config));
+    }
+
+    // === Git Operations ===
+    async function ensureDir(path) {
+      try {
+        await pfs.mkdir(path, { recursive: true });
+      } catch (e) {
+        if (e.code !== 'EEXIST') throw e;
+      }
+    }
+
+    async function cloneRepo(repoId, cloneUrl, branch) {
+      const dir = `${SYNC_DIR}/${repoId}`;
+      await ensureDir(SYNC_DIR);
+
+      console.log(`Cloning ${cloneUrl} to ${dir}...`);
+      await git.clone({
+        fs,
+        http,
+        dir,
+        url: cloneUrl,
+        ref: branch,
+        singleBranch: true,
+        depth: 1
+      });
+      console.log('Clone complete');
+    }
+
+    async function pullRepo(repoId, branch = 'main') {
+      const dir = `${SYNC_DIR}/${repoId}`;
+      console.log(`Pulling ${repoId}...`);
+      await git.pull({
+        fs,
+        http,
+        dir,
+        ref: branch,
+        singleBranch: true,
+        author: { name: 'browser', email: 'browser@local' }
+      });
+      console.log('Pull complete');
+    }
+
+    async function repoExists(repoId) {
+      try {
+        await pfs.stat(`${SYNC_DIR}/${repoId}/.git`);
+        return true;
+      } catch {
+        return false;
+      }
+    }
+
+    async function listFiles(repoId, dirPath = '') {
+      const dir = `${SYNC_DIR}/${repoId}/${dirPath}`;
+      const entries = await pfs.readdir(dir);
+      const result = [];
+
+      for (const name of entries) {
+        if (name === '.git') continue;
+        const fullPath = dirPath ? `${dirPath}/${name}` : name;
+        const stat = await pfs.stat(`${SYNC_DIR}/${repoId}/${fullPath}`);
+        result.push({
+          name,
+          path: fullPath,
+          type: stat.isDirectory() ? 'dir' : 'file'
+        });
+      }
+
+      return result.sort((a, b) => {
+        if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+    }
+
+    async function readFile(repoId, filePath) {
+      const content = await pfs.readFile(`${SYNC_DIR}/${repoId}/${filePath}`, 'utf8');
+      return content;
+    }
+
+    async function deleteRepo(repoId) {
+      const dir = `${SYNC_DIR}/${repoId}`;
+      async function rmrf(path) {
+        const stat = await pfs.stat(path);
+        if (stat.isDirectory()) {
+          const entries = await pfs.readdir(path);
+          for (const entry of entries) {
+            await rmrf(`${path}/${entry}`);
+          }
+          await pfs.rmdir(path);
+        } else {
+          await pfs.unlink(path);
+        }
+      }
+      await rmrf(dir);
+    }
+
+    // === Nostr ===
+    function connectRelays(relays, repoIds, trusted, onEvent) {
+      const sockets = [];
+
+      for (const url of relays) {
+        const ws = new WebSocket(url);
+        sockets.push({ url, ws, status: 'connecting' });
+
+        ws.onopen = () => {
+          console.log(`Connected to ${url}`);
+          sockets.find(s => s.url === url).status = 'connected';
+
+          // Subscribe to 30617 events for our repos
+          ws.send(JSON.stringify([
+            'REQ', 'sync',
+            { kinds: [30617], '#d': repoIds }
+          ]));
+        };
+
+        ws.onmessage = (e) => {
+          try {
+            const msg = JSON.parse(e.data);
+            if (msg[0] === 'EVENT' && msg[2]) {
+              const event = msg[2];
+              if (trusted.includes(event.pubkey)) {
+                onEvent(event);
+              }
+            }
+          } catch (err) {
+            console.error('Parse error:', err);
+          }
+        };
+
+        ws.onclose = () => {
+          console.log(`Disconnected from ${url}`);
+          sockets.find(s => s.url === url).status = 'disconnected';
+        };
+
+        ws.onerror = (err) => {
+          console.error(`Error from ${url}:`, err);
+        };
+      }
+
+      return sockets;
+    }
+
+    // === Components ===
+    function Header({ relayStatus }) {
+      return html`
+        <header>
+          <h1>🔗 Nostr Git Browser</h1>
+          <div class="status">
+            ${relayStatus.map(r => html`
+              <span key=${r.url}>
+                <span class="status-dot ${r.status}"></span>
+                ${new URL(r.url).host}
+              </span>
+            `)}
+          </div>
+        </header>
+      `;
+    }
+
+    function RepoList({ repos, selected, syncing, onSelect, onSync, onDelete, onAdd }) {
+      return html`
+        <div class="sidebar">
+          <h2>Repositories</h2>
+          <div class="repo-list">
+            ${Object.entries(repos).map(([id, repo]) => html`
+              <div
+                key=${id}
+                class="repo-item ${selected === id ? 'selected' : ''} ${syncing === id ? 'syncing' : ''}"
+                onClick=${() => onSelect(id)}
+              >
+                <span>📁</span>
+                <span class="name">${id}</span>
+                <button class="sync-btn" onClick=${(e) => { e.stopPropagation(); onSync(id); }}>↻</button>
+              </div>
+            `)}
+            ${Object.keys(repos).length === 0 && html`
+              <div class="empty-state">No repos yet</div>
+            `}
+          </div>
+          <button class="add-btn" onClick=${onAdd}>+ Add Repository</button>
+        </div>
+      `;
+    }
+
+    function FileTree({ files, selected, expanded, onSelect, onToggle, depth = 0 }) {
+      return html`
+        ${files.map(entry => html`
+          <div key=${entry.path}>
+            <div
+              class="file-entry ${selected === entry.path ? 'selected' : ''}"
+              style="padding-left: ${12 + depth * 16}px"
+              onClick=${() => entry.type === 'dir' ? onToggle(entry.path) : onSelect(entry.path)}
+            >
+              <span>${entry.type === 'dir' ? (expanded.has(entry.path) ? '📂' : '📁') : '📄'}</span>
+              <span>${entry.name}</span>
+            </div>
+            ${entry.type === 'dir' && expanded.has(entry.path) && entry.children && html`
+              <${FileTree}
+                files=${entry.children}
+                selected=${selected}
+                expanded=${expanded}
+                onSelect=${onSelect}
+                onToggle=${onToggle}
+                depth=${depth + 1}
+              />
+            `}
+          </div>
+        `)}
+      `;
+    }
+
+    function FileView({ path, content, localFiles = {} }) {
+      const [mode, setMode] = useState('raw');
+      const isHtml = path?.endsWith('.html');
+
+      // Inject fetch wrapper for local files when rendering HTML preview
+      const previewContent = useMemo(() => {
+        if (!isHtml || !content) return content;
+
+        const fetchWrapper = '<script>' +
+          'window.__localFiles = ' + JSON.stringify(localFiles) + ';' +
+          'const _fetch = window.fetch;' +
+          'window.fetch = (url, ...args) => {' +
+          '  const name = String(url).split("?")[0];' +
+          '  if (window.__localFiles[name] !== undefined) {' +
+          '    return Promise.resolve(new Response(JSON.stringify(window.__localFiles[name]), {' +
+          '      headers: { "Content-Type": "application/json" }' +
+          '    }));' +
+          '  }' +
+          '  return _fetch(url, ...args);' +
+          '};' +
+          '<' + '/script>';
+
+        // Insert after <head> or at start of document
+        if (content.includes('<head>')) {
+          return content.replace('<head>', '<head>' + fetchWrapper);
+        }
+        return fetchWrapper + content;
+      }, [content, localFiles, isHtml]);
+
+      return html`
+        <div class="file-view">
+          ${path ? html`
+            <div class="file-toolbar">
+              <span class="path">${path}</span>
+              ${isHtml && html`
+                <button onClick=${() => setMode(m => m === 'raw' ? 'preview' : 'raw')}>
+                  ${mode === 'raw' ? 'Preview' : 'Raw'}
+                </button>
+              `}
+            </div>
+            <div class="file-content">
+              ${mode === 'preview' && isHtml
+                ? html`<iframe srcdoc=${previewContent} sandbox="allow-scripts" />`
+                : html`<pre>${content}</pre>`
+              }
+            </div>
+          ` : html`
+            <div class="empty-state">Select a file to view</div>
+          `}
+        </div>
+      `;
+    }
+
+    function AddRepoModal({ onAdd, onClose }) {
+      const [id, setId] = useState('');
+      const [cloneUrl, setCloneUrl] = useState('');
+      const [branch, setBranch] = useState('gh-pages');
+      const [trusted, setTrusted] = useState('');
+
+      const handleSubmit = (e) => {
+        e.preventDefault();
+        onAdd({
+          id,
+          cloneUrl,
+          branch,
+          trusted: trusted.split(/[,\n]+/).map(s => s.trim()).filter(Boolean)
+        });
+      };
+
+      return html`
+        <div class="modal-overlay" onClick=${onClose}>
+          <form class="modal" onClick=${e => e.stopPropagation()} onSubmit=${handleSubmit}>
+            <h2>Add Repository</h2>
+            <label>
+              <span>Repository ID</span>
+              <input value=${id} onInput=${e => setId(e.target.value)} placeholder="20260202" required />
+            </label>
+            <label>
+              <span>Clone URL</span>
+              <input value=${cloneUrl} onInput=${e => setCloneUrl(e.target.value)}
+                placeholder="https://melvin.me/public/git/sync/20260202" required />
+            </label>
+            <label>
+              <span>Branch</span>
+              <input value=${branch} onInput=${e => setBranch(e.target.value)} />
+            </label>
+            <label>
+              <span>Trusted Pubkeys (one per line)</span>
+              <textarea value=${trusted} onInput=${e => setTrusted(e.target.value)}
+                placeholder="d769d2b81c051d2f2c0b437d0ffe39e00ff0f7161b520f0bd30811f4c057795f" rows="3" />
+            </label>
+            <div class="buttons">
+              <button type="button" onClick=${onClose}>Cancel</button>
+              <button type="submit">Add</button>
+            </div>
+          </form>
+        </div>
+      `;
+    }
+
+    function Toast({ message }) {
+      if (!message) return null;
+      return html`<div class="toast">${message}</div>`;
+    }
+
+    // === Main App ===
+    function App() {
+      const [config, setConfig] = useState(loadConfig);
+      const [selected, setSelected] = useState(null);
+      const [syncing, setSyncing] = useState(null);
+      const [files, setFiles] = useState([]);
+      const [expanded, setExpanded] = useState(new Set());
+      const [selectedFile, setSelectedFile] = useState(null);
+      const [fileContent, setFileContent] = useState('');
+      const [localFiles, setLocalFiles] = useState({});
+      const [showAddModal, setShowAddModal] = useState(false);
+      const [relayStatus, setRelayStatus] = useState([]);
+      const [toast, setToast] = useState('');
+
+      const showToast = (msg) => {
+        setToast(msg);
+        setTimeout(() => setToast(''), 3000);
+      };
+
+      // Load files when repo selected
+      useEffect(() => {
+        if (!selected) {
+          setFiles([]);
+          return;
+        }
+        loadFiles(selected, '').then(setFiles).catch(console.error);
+      }, [selected]);
+
+      // Load file content when file selected
+      useEffect(() => {
+        if (!selected || !selectedFile) {
+          setFileContent('');
+          setLocalFiles({});
+          return;
+        }
+
+        async function loadContent() {
+          const content = await readFile(selected, selectedFile);
+          setFileContent(content);
+
+          // If HTML file, scan for fetch() calls and load those files
+          if (selectedFile.endsWith('.html')) {
+            const data = {};
+
+            // Find fetch('...') patterns in the HTML
+            const fetchMatches = content.matchAll(/fetch\s*\(\s*['"]([^'"?]+)/g);
+            for (const match of fetchMatches) {
+              const fetchPath = match[1];
+              try {
+                const json = await readFile(selected, fetchPath);
+                data[fetchPath] = JSON.parse(json);
+              } catch (e) {
+                console.warn(`Failed to load ${fetchPath}:`, e);
+              }
+            }
+
+            setLocalFiles(data);
+          } else {
+            setLocalFiles({});
+          }
+        }
+
+        loadContent().catch(console.error);
+      }, [selected, selectedFile]);
+
+      // Connect to relays
+      useEffect(() => {
+        const repoIds = Object.keys(config.repos);
+        const trusted = [...new Set(Object.values(config.repos).flatMap(r => r.trusted))];
+
+        if (repoIds.length === 0) return;
+
+        const sockets = connectRelays(config.relays, repoIds, trusted, async (event) => {
+          const dTag = event.tags.find(t => t[0] === 'd');
+          if (!dTag) return;
+
+          const repoId = dTag[1];
+          if (!config.repos[repoId]) return;
+
+          showToast(`Update detected: ${repoId}`);
+          await syncRepo(repoId);
+        });
+
+        setRelayStatus(sockets.map(s => ({ url: s.url, status: s.status })));
+
+        const interval = setInterval(() => {
+          setRelayStatus(sockets.map(s => ({ url: s.url, status: s.status })));
+        }, 1000);
+
+        return () => {
+          clearInterval(interval);
+          sockets.forEach(s => s.ws.close());
+        };
+      }, [config.relays, Object.keys(config.repos).join(',')]);
+
+      async function loadFiles(repoId, dirPath) {
+        const entries = await listFiles(repoId, dirPath);
+        return entries;
+      }
+
+      async function syncRepo(repoId) {
+        const repo = config.repos[repoId];
+        if (!repo) return;
+
+        setSyncing(repoId);
+        try {
+          const exists = await repoExists(repoId);
+          if (exists) {
+            await pullRepo(repoId, repo.branch);
+          } else {
+            await cloneRepo(repoId, repo.cloneUrl, repo.branch);
+          }
+          showToast(`Synced: ${repoId}`);
+
+          // Refresh files if this repo is selected
+          if (selected === repoId) {
+            const newFiles = await loadFiles(repoId, '');
+            setFiles(newFiles);
+          }
+        } catch (err) {
+          console.error('Sync error:', err);
+          showToast(`Error: ${err.message}`);
+        } finally {
+          setSyncing(null);
+        }
+      }
+
+      async function handleToggle(path) {
+        const newExpanded = new Set(expanded);
+        if (newExpanded.has(path)) {
+          newExpanded.delete(path);
+        } else {
+          newExpanded.add(path);
+          // Load children
+          const children = await loadFiles(selected, path);
+          setFiles(prevFiles => {
+            const updateChildren = (entries) => {
+              return entries.map(entry => {
+                if (entry.path === path) {
+                  return { ...entry, children };
+                }
+                if (entry.children) {
+                  return { ...entry, children: updateChildren(entry.children) };
+                }
+                return entry;
+              });
+            };
+            return updateChildren(prevFiles);
+          });
+        }
+        setExpanded(newExpanded);
+      }
+
+      async function handleAddRepo({ id, cloneUrl, branch, trusted }) {
+        const newConfig = {
+          ...config,
+          repos: {
+            ...config.repos,
+            [id]: { cloneUrl, branch, trusted }
+          }
+        };
+        setConfig(newConfig);
+        saveConfig(newConfig);
+        setShowAddModal(false);
+
+        // Clone the repo
+        await syncRepo(id);
+        setSelected(id);
+      }
+
+      async function handleDeleteRepo(repoId) {
+        if (!confirm(`Delete ${repoId}?`)) return;
+
+        try {
+          await deleteRepo(repoId);
+        } catch (err) {
+          console.error('Delete error:', err);
+        }
+
+        const { [repoId]: _, ...rest } = config.repos;
+        const newConfig = { ...config, repos: rest };
+        setConfig(newConfig);
+        saveConfig(newConfig);
+
+        if (selected === repoId) {
+          setSelected(null);
+          setFiles([]);
+        }
+      }
+
+      return html`
+        <div class="app">
+          <${Header} relayStatus=${relayStatus} />
+          <div class="main">
+            <${RepoList}
+              repos=${config.repos}
+              selected=${selected}
+              syncing=${syncing}
+              onSelect=${setSelected}
+              onSync=${syncRepo}
+              onDelete=${handleDeleteRepo}
+              onAdd=${() => setShowAddModal(true)}
+            />
+            <div class="file-tree">
+              ${selected ? html`
+                <${FileTree}
+                  files=${files}
+                  selected=${selectedFile}
+                  expanded=${expanded}
+                  onSelect=${setSelectedFile}
+                  onToggle=${handleToggle}
+                />
+              ` : html`
+                <div class="empty-state">Select a repository</div>
+              `}
+            </div>
+            <${FileView} path=${selectedFile} content=${fileContent} localFiles=${localFiles} />
+          </div>
+          ${showAddModal && html`
+            <${AddRepoModal}
+              onAdd=${handleAddRepo}
+              onClose=${() => setShowAddModal(false)}
+            />
+          `}
+          <${Toast} message=${toast} />
+        </div>
+      `;
+    }
+
+    // === Render ===
+    render(html`<${App} />`, document.getElementById('app'));
+  </script>
+</body>
+</html>
