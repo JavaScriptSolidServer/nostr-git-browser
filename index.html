@@ -81,6 +81,7 @@
     }
     .repo-item:hover .sync-btn { opacity: 1; }
     .repo-item.syncing .sync-btn { opacity: 1; animation: spin 1s linear infinite; }
+    .repo-item .sync-btn.pushing { opacity: 1; color: #2da44e; }
     @keyframes spin { to { transform: rotate(360deg); } }
     .add-btn {
       margin: 8px;
@@ -412,6 +413,67 @@
       console.log('Pull complete');
     }
 
+    async function pushRepo(repoId, cloneUrl, branch = 'main') {
+      const dir = `${SYNC_DIR}/${repoId}`;
+      const privkey = getPrivkey();
+
+      if (!privkey) {
+        throw new Error('No private key configured. Open Settings to add one.');
+      }
+
+      console.log(`Pushing ${repoId} to ${cloneUrl}...`);
+      await git.push({
+        fs,
+        http,
+        dir,
+        url: cloneUrl,
+        ref: branch,
+        onAuth: async (url) => {
+          // Create NIP-98 token for this URL
+          const event = {
+            kind: 27235,
+            created_at: Math.floor(Date.now() / 1000),
+            tags: [
+              ['u', url],
+              ['method', 'POST']  // Git uses POST for push
+            ],
+            content: ''
+          };
+          const signed = await signEvent(event, privkey);
+          const token = btoa(JSON.stringify(signed));
+          return { username: 'nostr', password: token };
+        }
+      });
+      console.log('Push complete');
+    }
+
+    async function commitChanges(repoId, message) {
+      const dir = `${SYNC_DIR}/${repoId}`;
+      const privkey = getPrivkey();
+      const pubkey = getPubkeyFromPrivkey(privkey);
+
+      // Stage all changes
+      await git.add({ fs, dir, filepath: '.' });
+
+      // Create commit
+      const sha = await git.commit({
+        fs,
+        dir,
+        message,
+        author: {
+          name: pubkey ? `nostr:${pubkey.slice(0, 8)}` : 'browser',
+          email: pubkey ? `${pubkey.slice(0, 8)}@nostr` : 'browser@local'
+        }
+      });
+      console.log('Commit:', sha);
+      return sha;
+    }
+
+    async function writeFile(repoId, filePath, content) {
+      const fullPath = `${SYNC_DIR}/${repoId}/${filePath}`;
+      await pfs.writeFile(fullPath, content, 'utf8');
+    }
+
     async function repoExists(repoId) {
       try {
         await pfs.stat(`${SYNC_DIR}/${repoId}/.git`);
@@ -531,7 +593,7 @@
       `;
     }
 
-    function RepoList({ repos, selected, syncing, onSelect, onSync, onDelete, onAdd }) {
+    function RepoList({ repos, selected, syncing, pushing, onSelect, onSync, onPush, onDelete, onAdd }) {
       return html`
         <div class="sidebar">
           <h2>Repositories</h2>
@@ -544,7 +606,17 @@
               >
                 <span>📁</span>
                 <span class="name">${id}</span>
-                <button class="sync-btn" onClick=${(e) => { e.stopPropagation(); onSync(id); }}>↻</button>
+                <button
+                  class="sync-btn"
+                  onClick=${(e) => { e.stopPropagation(); onSync(id); }}
+                  title="Pull"
+                >↻</button>
+                <button
+                  class="sync-btn ${pushing === id ? 'pushing' : ''}"
+                  onClick=${(e) => { e.stopPropagation(); onPush(id); }}
+                  title="Push"
+                  style="margin-left: 2px;"
+                >↑</button>
               </div>
             `)}
             ${Object.keys(repos).length === 0 && html`
@@ -688,11 +760,14 @@
       return html`<div class="toast">${message}</div>`;
     }
 
-    function SettingsModal({ onClose, onToast }) {
+    function SettingsModal({ onClose, onToast, repos }) {
       const [privkey, setPrivkeyState] = useState(getPrivkey);
       const [testUrl, setTestUrl] = useState('https://melvin.me/public/git/sync/20260202/counter.txt');
       const [testResult, setTestResult] = useState(null);
       const [testing, setTesting] = useState(false);
+      const [gitTestResult, setGitTestResult] = useState(null);
+      const [gitTesting, setGitTesting] = useState(false);
+      const [selectedRepo, setSelectedRepo] = useState(Object.keys(repos || {})[0] || '');
 
       const pubkey = useMemo(() => getPubkeyFromPrivkey(privkey), [privkey]);
       const isValid = pubkey.length === 64;
@@ -742,9 +817,41 @@
         }
       };
 
+      const handleGitTest = async () => {
+        if (!isValid || !selectedRepo) {
+          setGitTestResult({ success: false, message: 'Need valid key and repo' });
+          return;
+        }
+
+        setGitTesting(true);
+        setGitTestResult(null);
+
+        try {
+          const repo = repos[selectedRepo];
+          if (!repo) throw new Error('Repo not found');
+
+          // Create/update a test file with timestamp
+          const timestamp = new Date().toISOString();
+          await writeFile(selectedRepo, 'browser-test.txt', `Browser push test: ${timestamp}\n`);
+
+          // Commit
+          await commitChanges(selectedRepo, `Browser test: ${timestamp}`);
+
+          // Push
+          await pushRepo(selectedRepo, repo.cloneUrl, repo.branch);
+
+          setGitTestResult({ success: true, message: `Pushed to ${selectedRepo}!` });
+        } catch (err) {
+          console.error('Git test error:', err);
+          setGitTestResult({ success: false, message: err.message });
+        } finally {
+          setGitTesting(false);
+        }
+      };
+
       return html`
         <div class="modal-overlay" onClick=${onClose}>
-          <div class="modal" onClick=${e => e.stopPropagation()}>
+          <div class="modal" onClick=${e => e.stopPropagation()} style="max-height: 90vh; overflow-y: auto;">
             <h2>Settings</h2>
             <label>
               <span>Private Key (hex)</span>
@@ -785,6 +892,32 @@
                 ${testResult.message}
               </div>
             `}
+            <hr style="margin: 16px 0; border: none; border-top: 1px solid #d0d7de;" />
+            <label>
+              <span>Test Git Push</span>
+              <select
+                value=${selectedRepo}
+                onChange=${e => setSelectedRepo(e.target.value)}
+                style="width: 100%; padding: 8px; border: 1px solid #d0d7de; border-radius: 6px;"
+              >
+                ${Object.keys(repos || {}).map(id => html`
+                  <option key=${id} value=${id}>${id}</option>
+                `)}
+              </select>
+            </label>
+            <button
+              class="test-btn"
+              onClick=${handleGitTest}
+              disabled=${!isValid || !selectedRepo || gitTesting}
+              style="margin-top: 8px;"
+            >
+              ${gitTesting ? 'Pushing...' : 'Create Commit & Push'}
+            </button>
+            ${gitTestResult && html`
+              <div class="test-result ${gitTestResult.success ? 'success' : 'error'}">
+                ${gitTestResult.message}
+              </div>
+            `}
             <div class="buttons">
               <button type="button" onClick=${onClose}>Cancel</button>
               <button type="submit" onClick=${handleSave}>Save</button>
@@ -799,6 +932,7 @@
       const [config, setConfig] = useState(loadConfig);
       const [selected, setSelected] = useState(null);
       const [syncing, setSyncing] = useState(null);
+      const [pushing, setPushing] = useState(null);
       const [files, setFiles] = useState([]);
       const [expanded, setExpanded] = useState(new Set());
       const [selectedFile, setSelectedFile] = useState(null);
@@ -922,6 +1056,28 @@
         }
       }
 
+      async function handlePush(repoId) {
+        const repo = config.repos[repoId];
+        if (!repo) return;
+
+        const privkey = getPrivkey();
+        if (!privkey) {
+          showToast('No private key configured. Open Settings first.');
+          return;
+        }
+
+        setPushing(repoId);
+        try {
+          await pushRepo(repoId, repo.cloneUrl, repo.branch);
+          showToast(`Pushed: ${repoId}`);
+        } catch (err) {
+          console.error('Push error:', err);
+          showToast(`Push error: ${err.message}`);
+        } finally {
+          setPushing(null);
+        }
+      }
+
       async function handleToggle(path) {
         const newExpanded = new Set(expanded);
         if (newExpanded.has(path)) {
@@ -993,8 +1149,10 @@
               repos=${config.repos}
               selected=${selected}
               syncing=${syncing}
+              pushing=${pushing}
               onSelect=${setSelected}
               onSync=${syncRepo}
+              onPush=${handlePush}
               onDelete=${handleDeleteRepo}
               onAdd=${() => setShowAddModal(true)}
             />
@@ -1023,6 +1181,7 @@
             <${SettingsModal}
               onClose=${() => setShowSettingsModal(false)}
               onToast=${showToast}
+              repos=${config.repos}
             />
           `}
           <${Toast} message=${toast} />
