@@ -443,13 +443,18 @@
             body
           });
 
+          // Return response in format isomorphic-git expects
+          const responseBody = new Uint8Array(await res.arrayBuffer());
+
           return {
             url: res.url,
             method,
             statusCode: res.status,
             statusMessage: res.statusText,
             headers: Object.fromEntries(res.headers.entries()),
-            body: [new Uint8Array(await res.arrayBuffer())]
+            body: (async function* () {
+              yield responseBody;
+            })()
           };
         }
       };
