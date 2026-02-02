@@ -413,6 +413,48 @@
       console.log('Pull complete');
     }
 
+    // Create HTTP client with NIP-98 auth for a specific privkey
+    function createAuthenticatedHttp(privkey) {
+      return {
+        async request({ url, method, headers, body }) {
+          // Create NIP-98 token for this specific request
+          const event = {
+            kind: 27235,
+            created_at: Math.floor(Date.now() / 1000),
+            tags: [
+              ['u', url],
+              ['method', method]
+            ],
+            content: ''
+          };
+          const signed = await signEvent(event, privkey);
+          const token = btoa(JSON.stringify(signed));
+
+          // Add auth header
+          const authHeaders = {
+            ...headers,
+            'Authorization': 'Nostr ' + token
+          };
+
+          // Make the request
+          const res = await fetch(url, {
+            method,
+            headers: authHeaders,
+            body
+          });
+
+          return {
+            url: res.url,
+            method,
+            statusCode: res.status,
+            statusMessage: res.statusText,
+            headers: Object.fromEntries(res.headers.entries()),
+            body: [new Uint8Array(await res.arrayBuffer())]
+          };
+        }
+      };
+    }
+
     async function pushRepo(repoId, cloneUrl, branch = 'main') {
       const dir = `${SYNC_DIR}/${repoId}`;
       const privkey = getPrivkey();
@@ -422,27 +464,13 @@
       }
 
       console.log(`Pushing ${repoId} to ${cloneUrl}...`);
+      const authHttp = createAuthenticatedHttp(privkey);
       await git.push({
         fs,
-        http,
+        http: authHttp,
         dir,
         url: cloneUrl,
-        ref: branch,
-        onAuth: async (url) => {
-          // Create NIP-98 token for this URL
-          const event = {
-            kind: 27235,
-            created_at: Math.floor(Date.now() / 1000),
-            tags: [
-              ['u', url],
-              ['method', 'POST']  // Git uses POST for push
-            ],
-            content: ''
-          };
-          const signed = await signEvent(event, privkey);
-          const token = btoa(JSON.stringify(signed));
-          return { username: 'nostr', password: token };
-        }
+        ref: branch
       });
       console.log('Push complete');
     }
