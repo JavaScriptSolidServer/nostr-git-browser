@@ -823,6 +823,9 @@
           return;
         }
 
+        // Save privkey first so pushRepo can access it
+        setPrivkey(privkey);
+
         setGitTesting(true);
         setGitTestResult(null);
 
