@@ -436,15 +436,34 @@
             'Authorization': 'Nostr ' + token
           };
 
+          // Collect body if it's an async iterable
+          let requestBody = body;
+          if (body && typeof body[Symbol.asyncIterator] === 'function') {
+            const chunks = [];
+            for await (const chunk of body) {
+              chunks.push(chunk);
+            }
+            const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+            requestBody = new Uint8Array(totalLength);
+            let offset = 0;
+            for (const chunk of chunks) {
+              requestBody.set(chunk, offset);
+              offset += chunk.length;
+            }
+          }
+
+          console.log(`HTTP ${method} ${url}`, { bodySize: requestBody?.length });
+
           // Make the request
           const res = await fetch(url, {
             method,
             headers: authHeaders,
-            body
+            body: requestBody
           });
 
           // Return response in format isomorphic-git expects
           const responseBody = new Uint8Array(await res.arrayBuffer());
+          console.log(`Response ${res.status}:`, { bodySize: responseBody.length });
 
           return {
             url: res.url,
