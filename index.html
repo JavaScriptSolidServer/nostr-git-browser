@@ -452,7 +452,11 @@
             }
           }
 
-          console.log(`HTTP ${method} ${url}`, { bodySize: requestBody?.length });
+          console.log(`HTTP ${method} ${url}`, {
+            bodySize: requestBody?.length,
+            bodyType: requestBody?.constructor?.name,
+            bodyStart: requestBody ? new TextDecoder().decode(requestBody.slice(0, 50)) : null
+          });
 
           // Make the request
           const res = await fetch(url, {
