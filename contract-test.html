@@ -1,0 +1,353 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Contract Test - Add 500 Sats</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #f6f8fa;
+      color: #1f2328;
+      padding: 40px;
+      max-width: 700px;
+      margin: 0 auto;
+    }
+    h1 { margin-bottom: 8px; }
+    .meta { color: #656d76; margin-bottom: 24px; }
+    .card {
+      background: #fff;
+      border: 1px solid #d0d7de;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 16px;
+    }
+    .label { color: #656d76; font-size: 12px; text-transform: uppercase; margin-bottom: 8px; }
+    .entry {
+      display: flex;
+      justify-content: space-between;
+      padding: 12px 0;
+      border-bottom: 1px solid #eee;
+      font-family: monospace;
+    }
+    .entry:last-child { border-bottom: none; }
+    .amount { font-weight: 600; }
+    .total {
+      font-size: 24px;
+      font-weight: 600;
+      text-align: right;
+      padding: 16px;
+      background: #dafbe1;
+      border-radius: 8px;
+      margin-bottom: 16px;
+    }
+    button {
+      background: #2da44e;
+      color: white;
+      border: none;
+      padding: 12px 24px;
+      border-radius: 6px;
+      font-size: 16px;
+      cursor: pointer;
+      margin-right: 8px;
+      margin-bottom: 8px;
+    }
+    button:hover { background: #2c974b; }
+    button:disabled { background: #94d3a2; cursor: not-allowed; }
+    button.secondary { background: #0969da; }
+    button.secondary:hover { background: #0860ca; }
+    button.secondary:disabled { background: #80b8f0; }
+    .config {
+      display: grid;
+      gap: 12px;
+      margin-bottom: 16px;
+    }
+    .config label { display: block; font-size: 14px; color: #656d76; margin-bottom: 4px; }
+    .config input {
+      width: 100%;
+      padding: 8px 12px;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      font-family: monospace;
+      font-size: 14px;
+    }
+    .log {
+      background: #f6f8fa;
+      border: 1px solid #d0d7de;
+      border-radius: 6px;
+      padding: 12px;
+      font-family: monospace;
+      font-size: 13px;
+      max-height: 200px;
+      overflow-y: auto;
+      white-space: pre-wrap;
+    }
+    .log-entry { padding: 4px 0; border-bottom: 1px solid #eee; }
+    .log-entry:last-child { border-bottom: none; }
+    .log-entry.error { color: #cf222e; }
+    .log-entry.success { color: #1a7f37; }
+  </style>
+</head>
+<body>
+  <h1>Contract Test</h1>
+  <p class="meta">Minimal client-side contract: Add 500 sats to webledger</p>
+
+  <div id="app">Loading...</div>
+
+  <script type="module">
+    import { h, render } from 'https://esm.sh/preact@10.19.3';
+    import { useState, useEffect } from 'https://esm.sh/preact@10.19.3/hooks';
+    import htm from 'https://esm.sh/htm@3.1.1';
+    import git from 'https://esm.sh/isomorphic-git@1.25.3';
+    import http from 'https://esm.sh/isomorphic-git@1.25.3/http/web';
+    import LightningFS from 'https://esm.sh/@isomorphic-git/lightning-fs@4.6.0';
+    import { schnorr } from 'https://esm.sh/@noble/curves@1.3.0/secp256k1';
+    import { bytesToHex, hexToBytes } from 'https://esm.sh/@noble/hashes@1.4.0/utils';
+    import { sha256 } from 'https://esm.sh/@noble/hashes@1.4.0/sha256';
+
+    const html = htm.bind(h);
+    const fs = new LightningFS('nostr-git-browser');
+    const pfs = fs.promises;
+
+    // Config defaults
+    const DEFAULT_REPO = '20260202';
+    const DEFAULT_BRANCH = 'gh-pages';
+
+    // Sign Nostr event
+    async function signEvent(event, privkey) {
+      const pubkey = bytesToHex(schnorr.getPublicKey(privkey));
+      event.pubkey = pubkey;
+      const serialized = JSON.stringify([0, pubkey, event.created_at, event.kind, event.tags, event.content]);
+      event.id = bytesToHex(sha256(new TextEncoder().encode(serialized)));
+      event.sig = bytesToHex(await schnorr.sign(event.id, privkey));
+      return event;
+    }
+
+    // Create authenticated HTTP client for git push
+    function createAuthenticatedHttp(privkey) {
+      return {
+        async request({ url, method, headers, body }) {
+          const event = {
+            kind: 27235,
+            created_at: Math.floor(Date.now() / 1000),
+            tags: [['u', url], ['method', method]],
+            content: ''
+          };
+          const signed = await signEvent(event, privkey);
+          const token = btoa(JSON.stringify(signed));
+
+          let requestBody = body;
+          if (body) {
+            if (typeof body[Symbol.asyncIterator] === 'function') {
+              const chunks = [];
+              for await (const chunk of body) { chunks.push(chunk); }
+              const totalLength = chunks.reduce((sum, c) => sum + c.length, 0);
+              requestBody = new Uint8Array(totalLength);
+              let offset = 0;
+              for (const chunk of chunks) { requestBody.set(chunk, offset); offset += chunk.length; }
+            } else if (Array.isArray(body)) {
+              const totalLength = body.reduce((sum, c) => sum + c.length, 0);
+              requestBody = new Uint8Array(totalLength);
+              let offset = 0;
+              for (const chunk of body) { requestBody.set(chunk, offset); offset += chunk.length; }
+            }
+          }
+
+          const res = await fetch(url, {
+            method,
+            headers: { ...headers, 'Authorization': 'Nostr ' + token },
+            body: requestBody
+          });
+
+          const responseBody = new Uint8Array(await res.arrayBuffer());
+          return {
+            url: res.url, method,
+            statusCode: res.status, statusMessage: res.statusText,
+            headers: Object.fromEntries(res.headers.entries()),
+            body: (async function* () { yield responseBody; })()
+          };
+        }
+      };
+    }
+
+    // Contract: Add sats to entry
+    function addSats(state, pubkey, amount = 500) {
+      const url = `did:nostr:${pubkey}`;
+      const entry = state.entries.find(e => e.url === url);
+      if (entry) {
+        entry.amount = (parseInt(entry.amount) || 0) + amount;
+      } else {
+        state.entries.push({ url, amount });
+      }
+      state.updated = Math.floor(Date.now() / 1000);
+      return state;
+    }
+
+    function App() {
+      const [repoId, setRepoId] = useState(DEFAULT_REPO);
+      const [cloneUrl, setCloneUrl] = useState('');
+      const [privkey, setPrivkey] = useState('');
+      const [state, setState] = useState(null);
+      const [logs, setLogs] = useState([]);
+      const [loading, setLoading] = useState(false);
+
+      const log = (msg, type = 'info') => {
+        setLogs(prev => [...prev, { msg, type, time: new Date().toLocaleTimeString() }]);
+      };
+
+      // Load config from localStorage
+      useEffect(() => {
+        try {
+          const saved = JSON.parse(localStorage.getItem('nostr-git-config') || '{}');
+          if (saved.repos && saved.repos[repoId]) {
+            setCloneUrl(saved.repos[repoId].cloneUrl || '');
+          }
+          const pk = localStorage.getItem('nostr-git-privkey') || '';
+          setPrivkey(pk);
+        } catch (e) {}
+      }, [repoId]);
+
+      // Load webledgers.json
+      const loadState = async () => {
+        try {
+          log('Loading webledgers.json...');
+          const dir = `/sync/${repoId}`;
+          const content = await pfs.readFile(`${dir}/webledgers.json`, 'utf8');
+          const data = JSON.parse(content);
+          setState(data);
+          log('State loaded', 'success');
+        } catch (e) {
+          log(`Error loading state: ${e.message}`, 'error');
+        }
+      };
+
+      // Apply contract and save
+      const handleAddSats = async () => {
+        if (!state) return;
+        if (!privkey) { log('Private key required', 'error'); return; }
+
+        try {
+          setLoading(true);
+          const pubkey = bytesToHex(schnorr.getPublicKey(privkey));
+          log(`Adding 500 sats to did:nostr:${pubkey.slice(0, 8)}...`);
+
+          const newState = addSats({ ...state, entries: [...state.entries] }, pubkey, 500);
+          setState(newState);
+
+          // Write to IndexedDB
+          const dir = `/sync/${repoId}`;
+          await pfs.writeFile(`${dir}/webledgers.json`, JSON.stringify(newState, null, 2));
+          log('State written to IndexedDB', 'success');
+        } catch (e) {
+          log(`Error: ${e.message}`, 'error');
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      // Commit and push
+      const handleCommitPush = async () => {
+        if (!privkey) { log('Private key required', 'error'); return; }
+        if (!cloneUrl) { log('Clone URL required', 'error'); return; }
+
+        try {
+          setLoading(true);
+          const dir = `/sync/${repoId}`;
+
+          // Stage file
+          log('Staging webledgers.json...');
+          await git.add({ fs, dir, filepath: 'webledgers.json' });
+
+          // Commit
+          log('Creating commit...');
+          const pubkey = bytesToHex(schnorr.getPublicKey(privkey));
+          await git.commit({
+            fs, dir,
+            message: 'contract: add 500 sats',
+            author: { name: pubkey.slice(0, 8), email: `${pubkey.slice(0, 8)}@nostr` }
+          });
+          log('Commit created', 'success');
+
+          // Push
+          log('Pushing to remote...');
+          const authHttp = createAuthenticatedHttp(privkey);
+          await git.push({
+            fs,
+            http: authHttp,
+            dir,
+            url: cloneUrl,
+            ref: DEFAULT_BRANCH
+          });
+          log('Pushed successfully!', 'success');
+        } catch (e) {
+          log(`Error: ${e.message}`, 'error');
+        } finally {
+          setLoading(false);
+        }
+      };
+
+      const total = state?.entries?.reduce((sum, e) => sum + (parseInt(e.amount) || 0), 0) || 0;
+
+      return html`
+        <div class="card">
+          <div class="label">Configuration</div>
+          <div class="config">
+            <div>
+              <label>Repo ID</label>
+              <input value=${repoId} onInput=${e => setRepoId(e.target.value)} />
+            </div>
+            <div>
+              <label>Clone URL</label>
+              <input value=${cloneUrl} onInput=${e => setCloneUrl(e.target.value)} placeholder="https://..." />
+            </div>
+            <div>
+              <label>Private Key (hex)</label>
+              <input type="password" value=${privkey} onInput=${e => setPrivkey(e.target.value)} placeholder="64-char hex" />
+            </div>
+          </div>
+          <button onClick=${loadState} disabled=${loading}>Load State</button>
+        </div>
+
+        ${state && html`
+          <div class="card">
+            <div class="label">Current State</div>
+            ${state.entries?.map(e => html`
+              <div class="entry">
+                <span>${e.url?.slice(0, 30)}...</span>
+                <span class="amount">${parseInt(e.amount).toLocaleString()} sats</span>
+              </div>
+            `)}
+          </div>
+
+          <div class="total">
+            Total: ${total.toLocaleString()} sats
+          </div>
+
+          <div class="card">
+            <div class="label">Contract Actions</div>
+            <button onClick=${handleAddSats} disabled=${loading}>
+              + Add 500 sats
+            </button>
+            <button class="secondary" onClick=${handleCommitPush} disabled=${loading}>
+              Commit & Push
+            </button>
+          </div>
+        `}
+
+        <div class="card">
+          <div class="label">Log</div>
+          <div class="log">
+            ${logs.map(l => html`
+              <div class="log-entry ${l.type}">[${l.time}] ${l.msg}</div>
+            `)}
+            ${logs.length === 0 && html`<div class="log-entry">No logs yet</div>`}
+          </div>
+        </div>
+      `;
+    }
+
+    render(html`<${App} />`, document.getElementById('app'));
+  </script>
+</body>
+</html>
