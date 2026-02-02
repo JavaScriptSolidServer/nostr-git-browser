@@ -408,6 +408,7 @@ The push button (↑) in repo list also works for pushing existing commits.
   - [ ] TXO file management (.well-known/txo/txo.json)
   - [ ] "Mark" button in UI to anchor commits to Bitcoin
 - [ ] **Client-side validated smart contracts**
+  - [ ] Minimal first contract: "Add 500 sats" button to increment webledger entry
   - [ ] state.json - Contract state (balances, entries, etc.)
   - [ ] contract.js - Pure validation functions for state transitions
   - [ ] schema.json - Optional JSON Schema for structure validation
