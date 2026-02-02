@@ -436,20 +436,33 @@
             'Authorization': 'Nostr ' + token
           };
 
-          // Collect body if it's an async iterable
+          // Collect body if it's an async iterable or array
           let requestBody = body;
-          if (body && typeof body[Symbol.asyncIterator] === 'function') {
-            const chunks = [];
-            for await (const chunk of body) {
-              chunks.push(chunk);
+          if (body) {
+            if (typeof body[Symbol.asyncIterator] === 'function') {
+              // Async iterable - collect chunks
+              const chunks = [];
+              for await (const chunk of body) {
+                chunks.push(chunk);
+              }
+              const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
+              requestBody = new Uint8Array(totalLength);
+              let offset = 0;
+              for (const chunk of chunks) {
+                requestBody.set(chunk, offset);
+                offset += chunk.length;
+              }
+            } else if (Array.isArray(body)) {
+              // Regular array of Uint8Arrays - concatenate
+              const totalLength = body.reduce((sum, chunk) => sum + chunk.length, 0);
+              requestBody = new Uint8Array(totalLength);
+              let offset = 0;
+              for (const chunk of body) {
+                requestBody.set(chunk, offset);
+                offset += chunk.length;
+              }
             }
-            const totalLength = chunks.reduce((sum, chunk) => sum + chunk.length, 0);
-            requestBody = new Uint8Array(totalLength);
-            let offset = 0;
-            for (const chunk of chunks) {
-              requestBody.set(chunk, offset);
-              offset += chunk.length;
-            }
+            // If already Uint8Array, use as-is
           }
 
           if (requestBody) {
