@@ -401,6 +401,18 @@ The push button (↑) in repo list also works for pushing existing commits.
 - [ ] Diff viewer
 - [ ] Service worker for offline support
 - [ ] Publish 30617 events after push
+- [ ] **Bitcoin commit anchoring (gitmark)**
+  - [ ] Key derivation for transaction chaining (base_key + commit_hashes)
+  - [ ] Build and sign Bitcoin transactions in browser
+  - [ ] Broadcast via mempool.space API
+  - [ ] TXO file management (.well-known/txo/txo.json)
+  - [ ] "Mark" button in UI to anchor commits to Bitcoin
+- [ ] **Client-side validated smart contracts**
+  - [ ] state.json - Contract state (balances, entries, etc.)
+  - [ ] contract.js - Pure validation functions for state transitions
+  - [ ] schema.json - Optional JSON Schema for structure validation
+  - [ ] CLI runner to apply updates before commit
+  - [ ] Trust model: pubkey signs valid state, Bitcoin anchors ordering
 
 ## References
 
